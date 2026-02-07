@@ -1,7 +1,16 @@
 {-# LANGUAGE CPP #-}
--- | Haskell bindings to the Anonymous Credit Tokens library.
+-- | Haskell bindings to the
+-- <https://github.com/SamuelSchlesinger/anonymous-credit-tokens Anonymous Credit Tokens>
+-- library, enabling privacy-preserving payment systems.
 --
--- Use 'TypeApplications' to select the range-proof size:
+-- __WARNING: This cryptography is experimental and unaudited.__
+-- __Do not use in production environments without thorough security review.__
+--
+-- Use @TypeApplications@ to select the range-proof size (@'L8'@, @'L16'@,
+-- @'L32'@, @'L64'@, @'L128'@). Larger @L@ values support higher credit
+-- amounts but increase proof size.
+--
+-- === Example
 --
 -- @
 -- {-\# LANGUAGE TypeApplications \#-}
@@ -11,17 +20,21 @@
 -- sk     <- 'generatePrivateKey'
 -- let pk = 'publicKey' sk
 --
--- -- Issuance (L=8)
+-- -- Issuance (L=16 range proof, up to 65535 credits)
 -- pre <- 'generatePreIssuance'
 -- req <- 'issuanceRequest' pre params
--- Right resp  <- 'issue' \@'L8' sk params req ('scalarFromWord64' 100) 'scalarZero'
+-- Right resp  <- 'issue' \@'L16' sk params req ('scalarFromWord64' 100) 'scalarZero'
 -- Right token <- 'toCreditToken' pre params pk req resp
 --
 -- -- Spending
--- (proof, preRef) <- 'proveSpend' \@'L8' token params ('scalarFromWord64' 30)
+-- (proof, preRef) <- 'proveSpend' \@'L16' token params ('scalarFromWord64' 30)
 -- Right ref       <- 'refund' sk params proof
 -- Right newToken  <- 'refundToCreditToken' preRef params proof ref pk
 -- @
+--
+-- 'CreditToken' is L-independent: you can issue with one L value and spend
+-- with another. The L parameter only affects the range proof used for a
+-- given operation, not the token itself.
 module Crypto.AnonymousCreditTokens
   ( -- * Range-proof size tags
     L8, L16, L32, L64, L128
