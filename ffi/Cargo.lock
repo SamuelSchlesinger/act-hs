@@ -13,9 +13,9 @@ dependencies = [
 
 [[package]]
 name = "anonymous-credit-tokens"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "20813a2bd0e3439c21cd6795c6a921fbaadbf2fe3f7691e1e437e1d386b3373d"
+checksum = "8e26d7735ac19b13b805a9fd92d9297ff36330842f86a4aac24f2b8e098e8551"
 dependencies = [
  "blake3",
  "ciborium",
