@@ -6,18 +6,18 @@ module ACT.Server.Handlers
   ( server
   ) where
 
-import ACT.Server.API (ACTAPI)
-import ACT.Server.Crypto (computeRequestContext, issuerKeyId, truncatedKeyId)
-import ACT.Server.DB (checkAndStoreNullifier)
+import ACT.API (ACTAPI)
+import ACT.Crypto (computeRequestContext, issuerKeyId, truncatedKeyId)
+import ACT.Server.DB (checkAndStoreNullifier, lookupStoredRefund)
 import ACT.Server.Types (ServerState(..), IssuerDirectory(..))
-import ACT.Server.WireFormat
+import ACT.WireFormat
   ( parseTokenRequest, parseToken
   , encodeTokenResponse, encodeTokenChallenge, tokenType
   )
 
 import Crypto.AnonymousCreditTokens
   ( L16, issue, refund
-  , spendProofNullifier, spendProofCharge
+  , spendProofNullifier, spendProofCharge, spendProofContext
   )
 import Crypto.AnonymousCreditTokens.Types
   ( PublicKey(..)
@@ -110,30 +110,61 @@ handleTokenRedeem st tokenBody = do
 #ifdef ACT_L16
   let proof = SpendProof encodedSpendProof :: SpendProof L16
       Scalar nullifierBytes = spendProofNullifier proof
+      proofHash = hash encodedSpendProof
 
-  -- Validate spend charge is > 0
+  -- Verify spendProofContext matches expected request_context
+  let expectedCtx = computeRequestContext
+                      (ssIssuerName st)
+                      (ssOriginInfo st)
+                      (ssCredentialContext st)
+                      expectedKeyId
+      proofCtx = spendProofContext proof
+  if proofCtx /= expectedCtx
+    then throwError $ err422 { errBody = "request_context mismatch" }
+    else return ()
+
+  -- Verify spend charge matches expected cost
   let charge = spendProofCharge proof
+      expectedCost = scalarFromWord64 (ssDefaultCost st)
   case scalarToWord64 charge of
     Just 0 -> throwError $ err422 { errBody = "spend charge must be > 0" }
     _      -> return ()
-
-  -- Atomic nullifier check
-  isNew <- liftIO $ checkAndStoreNullifier (ssConn st) nullifierBytes
-  if not isNew
-    then throwError err409 { errBody = "duplicate nullifier (double-spend)" }
+  if charge /= expectedCost
+    then throwError $ err422 { errBody = "spend charge does not match expected cost" }
     else return ()
 
-  -- Verify spend proof and create refund
-  result <- liftIO $ refund @L16 (ssPrivateKey st) (ssParams st) proof
+  -- Check for idempotent retry: if nullifier already exists, verify proof and return stored refund
+  let Scalar ctxBytes = expectedCtx
+  existingRefund <- liftIO $ lookupStoredRefund (ssConn st) nullifierBytes
+  case existingRefund of
+    Just (storedProofHash, storedRefundBytes)
+      | storedProofHash == proofHash ->
+          return $ LBS.fromStrict storedRefundBytes
+      | otherwise ->
+          throwError err409 { errBody = "duplicate nullifier (double-spend)" }
+    Nothing -> do
+      -- Verify spend proof and create refund
+      result <- liftIO $ refund @L16 (ssPrivateKey st) (ssParams st) proof
 #else
 #error "act-server requires ACT_L16"
 #endif
 
-  case result of
-    Right (Refund refundBytes) ->
-      return $ LBS.fromStrict refundBytes
-    Left err ->
-      throwError $ err422 { errBody = LBS.fromStrict (encodeUtf8' (show err)) }
+      case result of
+        Right (Refund refundBytes) -> do
+          -- Atomically store nullifier with context, proof hash, and refund data
+          isNew <- liftIO $ checkAndStoreNullifier (ssConn st) nullifierBytes ctxBytes proofHash refundBytes
+          if not isNew
+            -- Race condition: another request stored the nullifier between our check and insert
+            then do
+              storedRefund <- liftIO $ lookupStoredRefund (ssConn st) nullifierBytes
+              case storedRefund of
+                Just (ph, rb)
+                  | ph == proofHash -> return $ LBS.fromStrict rb
+                  | otherwise -> throwError err409 { errBody = "duplicate nullifier (double-spend)" }
+                Nothing -> throwError err409 { errBody = "duplicate nullifier (double-spend)" }
+            else return $ LBS.fromStrict refundBytes
+        Left err ->
+          throwError $ err422 { errBody = LBS.fromStrict (encodeUtf8' (show err)) }
 
 handleIssuerDirectory :: ServerState -> Handler IssuerDirectory
 handleIssuerDirectory st = return IssuerDirectory
@@ -144,6 +175,7 @@ handleIssuerDirectory st = return IssuerDirectory
   , idIssuerKeyId      = TE.decodeUtf8 (B16.encode (issuerKeyId (ssPublicKey st)))
   , idPublicKey        = TE.decodeUtf8 (B16.encode (let PublicKey b = ssPublicKey st in b))
   , idInitialCredits   = ssInitialCredits st
+  , idDefaultCost      = ssDefaultCost st
   }
 
 encodeUtf8' :: String -> BS.ByteString

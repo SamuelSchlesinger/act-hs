@@ -1,4 +1,4 @@
-module ACT.Server.Crypto
+module ACT.Crypto
   ( issuerKeyId
   , truncatedKeyId
   , computeRequestContext

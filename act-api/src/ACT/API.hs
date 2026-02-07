@@ -1,12 +1,12 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE TypeOperators #-}
-module ACT.Server.API
+module ACT.API
   ( ACTAPI
   , actAPI
   ) where
 
-import ACT.Server.ContentTypes (PrivateCredentialRequest, PrivateCredentialResponse)
-import ACT.Server.Types (IssuerDirectory)
+import ACT.ContentTypes (PrivateCredentialRequest, PrivateCredentialResponse)
+import ACT.Types (IssuerDirectory)
 
 import qualified Data.ByteString.Lazy as LBS
 import Data.Proxy (Proxy(..))

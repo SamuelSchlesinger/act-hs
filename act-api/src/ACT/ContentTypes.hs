@@ -1,6 +1,6 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings #-}
-module ACT.Server.ContentTypes
+module ACT.ContentTypes
   ( PrivateCredentialRequest
   , PrivateCredentialResponse
   ) where

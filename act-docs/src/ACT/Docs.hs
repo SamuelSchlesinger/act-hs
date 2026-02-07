@@ -4,14 +4,14 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeOperators #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
-module ACT.Server.Docs
+module ACT.Docs
   ( apiDocs
   , apiMarkdown
   ) where
 
-import ACT.Server.API (ACTAPI, actAPI)
-import ACT.Server.ContentTypes (PrivateCredentialRequest, PrivateCredentialResponse)
-import ACT.Server.Types (IssuerDirectory(..))
+import ACT.API (ACTAPI, actAPI)
+import ACT.ContentTypes (PrivateCredentialRequest, PrivateCredentialResponse)
+import ACT.Types (IssuerDirectory(..))
 
 import Data.Function ((&))
 import Data.Proxy (Proxy(..))
@@ -36,6 +36,7 @@ instance ToSample IssuerDirectory where
     , idIssuerKeyId      = "a1b2c3...(64 hex chars, SHA-256 of serialized public key)"
     , idPublicKey        = "d4e5f6...(hex-encoded CBOR serialized issuer public key)"
     , idInitialCredits   = 1000
+    , idDefaultCost      = 1
     }
 
 -- ---------------------------------------------------------------------------
@@ -108,10 +109,13 @@ extra =
         , ""
         , "**Double-spend prevention:** The server extracts the nullifier from the spend proof \
           \and atomically checks it against a persistent store (SQLite). If the nullifier \
-          \has been seen before, HTTP 409 (Conflict) is returned."
+          \has been seen before and the spend proof matches (SHA-256), the stored refund \
+          \is returned (idempotent retry). If the nullifier exists but the proof differs, \
+          \HTTP 409 (Conflict) is returned."
         , ""
         , "**Errors:** HTTP 422 for validation failures (wrong token type, key ID mismatch, \
-          \challenge digest mismatch, invalid proof). HTTP 409 for double-spend attempts."
+          \challenge digest mismatch, cost mismatch, context mismatch, invalid proof). \
+          \HTTP 409 for double-spend attempts with a different spend proof."
         ]
       ])
   <>
@@ -131,6 +135,7 @@ extra =
         , "- issuer_key_id: Hex-encoded SHA-256 hash of the serialized issuer public key (Section 5 of draft-schlesinger-privacypass-act)"
         , "- public_key: Hex-encoded CBOR serialized issuer public key"
         , "- initial_credits: Number of credits issued per credential"
+        , "- default_cost: Expected spend amount per redemption"
         ]
       ])
 

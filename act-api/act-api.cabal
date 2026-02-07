@@ -1,0 +1,25 @@
+cabal-version:   3.0
+name:            act-api
+version:         0.1.0.0
+license:         NONE
+build-type:      Simple
+
+library
+  exposed-modules:
+    ACT.API
+    ACT.ContentTypes
+    ACT.WireFormat
+    ACT.Crypto
+    ACT.Types
+  hs-source-dirs:   src
+  build-depends:
+    base                  >= 4.17 && < 5,
+    act-hs,
+    servant               >= 0.20,
+    cryptohash-sha256     >= 0.11,
+    http-media            >= 0.8,
+    bytestring            >= 0.11,
+    text                  >= 2.0,
+    aeson                 >= 2.0
+  default-language: Haskell2010
+  ghc-options: -Wall

@@ -1,8 +1,11 @@
-module ACT.Server.WireFormat
+module ACT.WireFormat
   ( tokenType
+  , putWord16BE
   , parseTokenRequest
   , parseToken
   , encodeTokenResponse
+  , encodeTokenRequest
+  , encodeToken
   , encodeTokenChallenge
   ) where
 
@@ -63,6 +66,27 @@ parseToken bs
 -- | Encode a TokenResponse (just the raw CBOR IssuanceResponse bytes).
 encodeTokenResponse :: ByteString -> ByteString
 encodeTokenResponse = id
+
+-- | Encode a TokenRequest from its components.
+--
+-- Wire format: token_type ++ truncated_key_id ++ encoded_request
+encodeTokenRequest :: Word8 -> ByteString -> ByteString
+encodeTokenRequest truncKeyId encodedRequest = BS.concat
+  [ putWord16BE tokenType
+  , BS.singleton truncKeyId
+  , encodedRequest
+  ]
+
+-- | Encode a Token from its components.
+--
+-- Wire format: token_type ++ challenge_digest ++ issuer_key_id ++ encoded_spend_proof
+encodeToken :: ByteString -> ByteString -> ByteString -> ByteString
+encodeToken challengeDigest issuerKeyIdBytes encodedSpendProof = BS.concat
+  [ putWord16BE tokenType
+  , challengeDigest
+  , issuerKeyIdBytes
+  , encodedSpendProof
+  ]
 
 -- | Encode a TokenChallenge.
 --

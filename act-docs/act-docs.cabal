@@ -1,0 +1,27 @@
+cabal-version:   3.0
+name:            act-docs
+version:         0.1.0.0
+license:         NONE
+build-type:      Simple
+
+library act-docs-lib
+  exposed-modules:  ACT.Docs
+  hs-source-dirs:   src
+  build-depends:
+    base                  >= 4.17 && < 5,
+    act-api,
+    servant               >= 0.20,
+    servant-docs          >= 0.13,
+    bytestring            >= 0.11,
+    lens                  >= 5.0
+  default-language: Haskell2010
+  ghc-options: -Wall
+
+executable act-docs
+  main-is:        GenDocs.hs
+  hs-source-dirs: app
+  build-depends:
+    base                  >= 4.17 && < 5,
+    act-docs:act-docs-lib
+  default-language: Haskell2010
+  ghc-options: -Wall

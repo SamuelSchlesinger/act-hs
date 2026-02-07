@@ -1,3 +1,6 @@
 packages:
   act-hs/
+  act-api/
   act-server/
+  act-client/
+  act-docs/

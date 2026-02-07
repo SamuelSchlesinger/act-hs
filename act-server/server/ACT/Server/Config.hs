@@ -20,6 +20,8 @@ data Config = Config
   , cfgParamsSvc         :: !String
   , cfgParamsDep         :: !String
   , cfgParamsVer         :: !String
+  , cfgDefaultCost       :: !Word64
+  , cfgNullifierTTL      :: !(Maybe Int)
   } deriving (Show)
 
 parseConfig :: IO Config
@@ -97,6 +99,18 @@ configParser = Config
      <> showDefault
      <> help "Params domain separator (ver)"
       )
+  <*> option auto
+      ( long "default-cost"
+     <> metavar "N"
+     <> value 1
+     <> showDefault
+     <> help "Expected spend amount per redemption"
+      )
+  <*> optional (option auto
+      ( long "nullifier-ttl"
+     <> metavar "SECONDS"
+     <> help "Seconds before nullifiers/refunds expire"
+      ))
 
 encodeUtf8' :: String -> ByteString
 encodeUtf8' = BS.pack . map (fromIntegral . fromEnum)

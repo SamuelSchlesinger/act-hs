@@ -6,34 +6,27 @@ build-type:      Simple
 
 library act-server-lib
   exposed-modules:
-    ACT.Server.API
-    ACT.Server.ContentTypes
-    ACT.Server.WireFormat
     ACT.Server.Handlers
     ACT.Server.DB
-    ACT.Server.Crypto
     ACT.Server.Config
     ACT.Server.Types
-    ACT.Server.Docs
   hs-source-dirs:   server
   build-depends:
     base                  >= 4.17 && < 5,
     act-hs,
+    act-api,
     servant               >= 0.20,
     servant-server        >= 0.20,
-    servant-docs          >= 0.13,
     warp                  >= 3.3,
     sqlite-simple         >= 0.4,
     cryptohash-sha256     >= 0.11,
     optparse-applicative  >= 0.17,
-    http-media            >= 0.8,
     bytestring            >= 0.11,
     text                  >= 2.0,
     aeson                 >= 2.0,
     base16-bytestring     >= 1.0,
     http-types            >= 0.12,
-    wai                   >= 3.2,
-    lens                  >= 5.0
+    wai                   >= 3.2
   default-language: Haskell2010
   ghc-options:      -Wall
   cpp-options:      -DACT_L16
@@ -44,21 +37,13 @@ executable act-server
   build-depends:
     base                  >= 4.17 && < 5,
     act-hs,
+    act-api,
     act-server:act-server-lib,
     servant-server        >= 0.20,
     warp                  >= 3.3,
     sqlite-simple         >= 0.4
   default-language: Haskell2010
   ghc-options:      -Wall -threaded
-
-executable act-server-docs
-  main-is:          GenDocs.hs
-  hs-source-dirs:   docs
-  build-depends:
-    base                  >= 4.17 && < 5,
-    act-server:act-server-lib
-  default-language: Haskell2010
-  ghc-options:      -Wall
 
 test-suite act-server-test
   type:             exitcode-stdio-1.0
@@ -67,6 +52,7 @@ test-suite act-server-test
   build-depends:
     base                  >= 4.17 && < 5,
     act-hs,
+    act-api,
     act-server:act-server-lib,
     servant               >= 0.20,
     servant-server        >= 0.20,

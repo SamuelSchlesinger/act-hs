@@ -4,21 +4,21 @@
 {-# LANGUAGE TypeApplications #-}
 module Main (main) where
 
-import ACT.Server.API (actAPI)
-import ACT.Server.Crypto (issuerKeyId, truncatedKeyId, computeRequestContext)
-import ACT.Server.DB (initDB, loadOrCreateKeyPair, checkAndStoreNullifier)
+import ACT.API (actAPI)
+import ACT.Crypto (issuerKeyId, truncatedKeyId, computeRequestContext)
+import ACT.Server.DB (initDB, loadOrCreateKeyPair, checkAndStoreNullifier, lookupStoredRefund, expireOldNullifiers)
 import ACT.Server.Handlers (server)
 import ACT.Server.Types (ServerState(..), IssuerDirectory(..))
-import ACT.Server.WireFormat (tokenType, parseTokenRequest, parseToken, encodeTokenChallenge)
+import ACT.WireFormat (tokenType, parseTokenRequest, parseToken, encodeTokenChallenge, putWord16BE)
 
 import Crypto.AnonymousCreditTokens
 import Crypto.Hash.SHA256 (hash)
 
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as LBS
-import Data.Bits (shiftR, (.&.))
-import Data.Word (Word16)
-import Database.SQLite.Simple (open)
+import Data.Bits ((.&.))
+import Data.Word (Word64)
+import Database.SQLite.Simple (open, execute, Only(..))
 import Network.HTTP.Client (newManager, defaultManagerSettings)
 import Network.HTTP.Types.Status (statusCode)
 import qualified Network.Wai.Handler.Warp as Warp
@@ -37,6 +37,9 @@ main = do
   -- End-to-end tests
   testEndToEnd
   testErrorCases
+  testCostMismatch
+  testIdempotentRefundRetry
+  testNullifierExpiry
   putStrLn ""
   putStrLn "=== All act-server tests passed ==="
   exitSuccess
@@ -231,23 +234,39 @@ testDB = do
 
   -- checkAndStoreNullifier: new nullifier returns True
   let nullifier1 = BS.replicate 32 0x01
-  isNew1 <- checkAndStoreNullifier conn nullifier1
+      ctx1 = BS.replicate 32 0xAA
+      ph1 = hash ("proof-1" :: BS.ByteString)
+      refund1 = "refund-data-1"
+  isNew1 <- checkAndStoreNullifier conn nullifier1 ctx1 ph1 refund1
   assertEq "new nullifier" isNew1 True
   putStrLn "  OK: new nullifier returns True"
 
   -- checkAndStoreNullifier: duplicate returns False
-  isNew2 <- checkAndStoreNullifier conn nullifier1
+  isNew2 <- checkAndStoreNullifier conn nullifier1 ctx1 ph1 refund1
   assertEq "duplicate nullifier" isNew2 False
   putStrLn "  OK: duplicate nullifier returns False"
 
+  -- lookupStoredRefund: returns stored proof hash and refund data
+  storedRefund <- lookupStoredRefund conn nullifier1
+  assertEq "stored refund" storedRefund (Just (ph1, refund1))
+  putStrLn "  OK: lookupStoredRefund returns stored data"
+
+  -- lookupStoredRefund: returns Nothing for unknown nullifier
+  noRefund <- lookupStoredRefund conn (BS.replicate 32 0xFF)
+  assertEq "no stored refund" noRefund Nothing
+  putStrLn "  OK: lookupStoredRefund returns Nothing for unknown"
+
   -- checkAndStoreNullifier: different nullifier returns True
   let nullifier2 = BS.replicate 32 0x02
-  isNew3 <- checkAndStoreNullifier conn nullifier2
+      ctx2 = BS.replicate 32 0xBB
+      ph2 = hash ("proof-2" :: BS.ByteString)
+      refund2 = "refund-data-2"
+  isNew3 <- checkAndStoreNullifier conn nullifier2 ctx2 ph2 refund2
   assertEq "different nullifier" isNew3 True
   putStrLn "  OK: different nullifier returns True"
 
   -- checkAndStoreNullifier: second duplicate still False
-  isNew4 <- checkAndStoreNullifier conn nullifier1
+  isNew4 <- checkAndStoreNullifier conn nullifier1 ctx1 ph1 refund1
   assertEq "triple nullifier" isNew4 False
   putStrLn "  OK: repeated duplicate still returns False"
 
@@ -266,11 +285,13 @@ testDB = do
 
 #ifdef ACT_L16
 
-testEndToEnd :: IO ()
-testEndToEnd = do
-  putStrLn "=== End-to-End ACT Server Test ==="
+-- | Helper to build a ServerState for tests with default cost
+mkTestServerState :: IO ServerState
+mkTestServerState = mkTestServerStateWithCost 100
 
-  -- Build app with in-memory SQLite
+-- | Helper to build a ServerState for tests with a specific default cost
+mkTestServerStateWithCost :: Word64 -> IO ServerState
+mkTestServerStateWithCost cost = do
   conn <- open ":memory:"
   initDB conn
   (sk, pk) <- loadOrCreateKeyPair conn
@@ -278,20 +299,31 @@ testEndToEnd = do
   params <- newParams "act-server" "privacy-pass" "production" "2026-01-01"
 
   let keyId = issuerKeyId pk
-      issuerName = "test-issuer" :: BS.ByteString
-      originInfo = "test-origin" :: BS.ByteString
-      credCtx = BS.empty
-      st = ServerState
-        { ssPrivateKey       = sk
-        , ssPublicKey        = pk
-        , ssParams           = params
-        , ssConn             = conn
-        , ssIssuerName       = issuerName
-        , ssOriginInfo       = originInfo
-        , ssCredentialContext = credCtx
-        , ssIssuerKeyId      = keyId
-        , ssInitialCredits   = 1000
-        }
+  return ServerState
+    { ssPrivateKey          = sk
+    , ssPublicKey           = pk
+    , ssParams              = params
+    , ssConn                = conn
+    , ssIssuerName          = "test-issuer"
+    , ssOriginInfo          = "test-origin"
+    , ssCredentialContext    = BS.empty
+    , ssIssuerKeyId         = keyId
+    , ssInitialCredits      = 1000
+    , ssDefaultCost         = cost
+    , ssNullifierTTLSeconds = Nothing
+    }
+
+testEndToEnd :: IO ()
+testEndToEnd = do
+  putStrLn "=== End-to-End ACT Server Test ==="
+
+  st <- mkTestServerState
+  let pk = ssPublicKey st
+      keyId = ssIssuerKeyId st
+      issuerName = ssIssuerName st
+      originInfo = ssOriginInfo st
+      credCtx = ssCredentialContext st
+      params = ssParams st
       app = serve actAPI (server st)
 
   Warp.testWithApplication (return app) $ \port -> do
@@ -334,7 +366,7 @@ testEndToEnd = do
     putStrLn "  OK: credential has 1000 credits"
 
     -- ---------------------------------------------------------------
-    -- Step 2: First spend (100 credits)
+    -- Step 2: First spend (100 credits = default cost)
     -- ---------------------------------------------------------------
     putStrLn "  [2] Spending 100 credits..."
 
@@ -369,24 +401,24 @@ testEndToEnd = do
     putStrLn "  OK: new credential has 900 credits"
 
     -- ---------------------------------------------------------------
-    -- Step 3: Double-spend (replay same Token) -> expect 409
+    -- Step 3: Double-spend (replay same Token) -> expect idempotent refund
     -- ---------------------------------------------------------------
     putStrLn "  [3] Attempting double-spend (replay)..."
 
     result3 <- runClientM (tokenRedeemClient (LBS.fromStrict tokenWireBytes1)) env
     case result3 of
-      Left (FailureResponse _ resp)
-        | statusCode (responseStatusCode resp) == 409 ->
-            putStrLn "  OK: double-spend rejected with 409"
-      Left err -> do putStrLn $ "  FAIL: expected 409, got: " ++ show err; exitFailure
-      Right _  -> do putStrLn "  FAIL: expected 409, got success"; exitFailure
+      Right bs -> do
+        -- Idempotent retry: should return the same refund bytes
+        assertEq "idempotent refund" (LBS.toStrict bs) refundBytes1
+        putStrLn "  OK: double-spend returns stored refund (idempotent)"
+      Left err -> do putStrLn $ "  FAIL: expected idempotent refund, got: " ++ show err; exitFailure
 
     -- ---------------------------------------------------------------
-    -- Step 4: Second spend from new credential (200 credits)
+    -- Step 4: Second spend from new credential (100 credits)
     -- ---------------------------------------------------------------
-    putStrLn "  [4] Spending 200 credits from new credential..."
+    putStrLn "  [4] Spending 100 credits from new credential..."
 
-    (proof2, preRef2) <- proveSpend @L16 token2 params (scalarFromWord64 200)
+    (proof2, preRef2) <- proveSpend @L16 token2 params (scalarFromWord64 100)
     let SpendProof proofBytes2 = proof2
         tokenWireBytes2 = BS.concat
           [ putWord16BE tokenType
@@ -407,8 +439,8 @@ testEndToEnd = do
       Left err -> do putStrLn $ "  FAIL: refundToCreditToken (2) returned " ++ show err; exitFailure
 
     let credits3 = creditTokenCredits token3
-    assertEq "remaining credits after second spend" credits3 (scalarFromWord64 700)
-    putStrLn "  OK: new credential has 700 credits"
+    assertEq "remaining credits after second spend" credits3 (scalarFromWord64 800)
+    putStrLn "  OK: new credential has 800 credits"
 
     -- ---------------------------------------------------------------
     -- Step 5: Issuer directory
@@ -419,6 +451,7 @@ testEndToEnd = do
       Right dir -> do
         assertEq "token_type" (idTokenType dir) tokenType
         assertEq "initial_credits" (idInitialCredits dir) 1000
+        assertEq "default_cost" (idDefaultCost dir) 100
         putStrLn "  OK: issuer directory returned valid data"
       Left err -> do putStrLn $ "  FAIL: issuer directory failed: " ++ show err; exitFailure
 
@@ -432,27 +465,13 @@ testErrorCases :: IO ()
 testErrorCases = do
   putStrLn "=== Error case tests ==="
 
-  conn <- open ":memory:"
-  initDB conn
-  (sk, pk) <- loadOrCreateKeyPair conn
-
-  params <- newParams "act-server" "privacy-pass" "production" "2026-01-01"
-
-  let keyId = issuerKeyId pk
-      issuerName = "test-issuer" :: BS.ByteString
-      originInfo = "test-origin" :: BS.ByteString
-      credCtx = BS.empty
-      st = ServerState
-        { ssPrivateKey       = sk
-        , ssPublicKey        = pk
-        , ssParams           = params
-        , ssConn             = conn
-        , ssIssuerName       = issuerName
-        , ssOriginInfo       = originInfo
-        , ssCredentialContext = credCtx
-        , ssIssuerKeyId      = keyId
-        , ssInitialCredits   = 1000
-        }
+  st <- mkTestServerState
+  let pk = ssPublicKey st
+      keyId = ssIssuerKeyId st
+      issuerName = ssIssuerName st
+      originInfo = ssOriginInfo st
+      credCtx = ssCredentialContext st
+      params = ssParams st
       app = serve actAPI (server st)
 
   Warp.testWithApplication (return app) $ \port -> do
@@ -572,6 +591,216 @@ testErrorCases = do
 
     putStrLn "  All error case tests PASSED"
 
+-- =========================================================================
+-- Cost mismatch tests
+-- =========================================================================
+
+testCostMismatch :: IO ()
+testCostMismatch = do
+  putStrLn "=== Cost mismatch tests ==="
+
+  -- Server expects cost=100, but client spends 50
+  st <- mkTestServerStateWithCost 100
+  let pk = ssPublicKey st
+      keyId = ssIssuerKeyId st
+      issuerName = ssIssuerName st
+      originInfo = ssOriginInfo st
+      credCtx = ssCredentialContext st
+      params = ssParams st
+      app = serve actAPI (server st)
+
+  Warp.testWithApplication (return app) $ \port -> do
+    mgr <- newManager defaultManagerSettings
+    let env = mkClientEnv mgr (BaseUrl Http "localhost" port "")
+
+    -- Issue a credential first
+    preIss <- generatePreIssuance
+    req <- issuanceRequest preIss params
+    let IssuanceRequest reqBytes = req
+        truncKeyId = BS.last (issuerKeyId pk)
+        tokenReqBytes = BS.concat
+          [ putWord16BE tokenType
+          , BS.singleton truncKeyId
+          , reqBytes
+          ]
+
+    result1 <- runClientM (tokenRequestClient (LBS.fromStrict tokenReqBytes)) env
+    respBytes <- case result1 of
+      Right bs -> return (LBS.toStrict bs)
+      Left err -> do putStrLn $ "  FAIL: issuance failed: " ++ show err; exitFailure
+
+    tokenResult <- toCreditToken preIss params pk req (IssuanceResponse respBytes)
+    token <- case tokenResult of
+      Right t  -> return t
+      Left err -> do putStrLn $ "  FAIL: toCreditToken returned " ++ show err; exitFailure
+
+    -- Spend with wrong cost (50 instead of 100)
+    putStrLn "  [CM1] Spending with wrong cost (50 instead of 100)..."
+    (proof, _) <- proveSpend @L16 token params (scalarFromWord64 50)
+    let SpendProof proofBytes = proof
+        challengeBytes = encodeTokenChallenge issuerName BS.empty originInfo credCtx
+        challengeDigest = hash challengeBytes
+        tokenWireBytes = BS.concat
+          [ putWord16BE tokenType
+          , challengeDigest
+          , keyId
+          , proofBytes
+          ]
+
+    result2 <- runClientM (tokenRedeemClient (LBS.fromStrict tokenWireBytes)) env
+    case result2 of
+      Left (FailureResponse _ resp)
+        | statusCode (responseStatusCode resp) == 422 ->
+            putStrLn "  OK: wrong cost rejected with 422"
+      Left err -> do putStrLn $ "  FAIL: expected 422, got: " ++ show err; exitFailure
+      Right _  -> do putStrLn "  FAIL: expected 422, got success"; exitFailure
+
+    putStrLn "  Cost mismatch tests PASSED"
+
+-- =========================================================================
+-- Idempotent refund retry tests
+-- =========================================================================
+
+testIdempotentRefundRetry :: IO ()
+testIdempotentRefundRetry = do
+  putStrLn "=== Idempotent refund retry tests ==="
+
+  st <- mkTestServerState
+  let pk = ssPublicKey st
+      keyId = ssIssuerKeyId st
+      issuerName = ssIssuerName st
+      originInfo = ssOriginInfo st
+      credCtx = ssCredentialContext st
+      params = ssParams st
+      app = serve actAPI (server st)
+
+  Warp.testWithApplication (return app) $ \port -> do
+    mgr <- newManager defaultManagerSettings
+    let env = mkClientEnv mgr (BaseUrl Http "localhost" port "")
+
+    -- Issue a credential
+    preIss <- generatePreIssuance
+    req <- issuanceRequest preIss params
+    let IssuanceRequest reqBytes = req
+        truncKeyId = BS.last (issuerKeyId pk)
+        tokenReqBytes = BS.concat
+          [ putWord16BE tokenType
+          , BS.singleton truncKeyId
+          , reqBytes
+          ]
+
+    result1 <- runClientM (tokenRequestClient (LBS.fromStrict tokenReqBytes)) env
+    respBytes <- case result1 of
+      Right bs -> return (LBS.toStrict bs)
+      Left err -> do putStrLn $ "  FAIL: issuance failed: " ++ show err; exitFailure
+
+    tokenResult <- toCreditToken preIss params pk req (IssuanceResponse respBytes)
+    token <- case tokenResult of
+      Right t  -> return t
+      Left err -> do putStrLn $ "  FAIL: toCreditToken returned " ++ show err; exitFailure
+
+    -- Spend 100 credits
+    (proof, preRef) <- proveSpend @L16 token params (scalarFromWord64 100)
+    let SpendProof proofBytes = proof
+        challengeBytes = encodeTokenChallenge issuerName BS.empty originInfo credCtx
+        challengeDigest = hash challengeBytes
+        tokenWireBytes = BS.concat
+          [ putWord16BE tokenType
+          , challengeDigest
+          , keyId
+          , proofBytes
+          ]
+
+    -- First redeem
+    putStrLn "  [IR1] First redeem..."
+    result2 <- runClientM (tokenRedeemClient (LBS.fromStrict tokenWireBytes)) env
+    refundBytes1 <- case result2 of
+      Right bs -> return (LBS.toStrict bs)
+      Left err -> do putStrLn $ "  FAIL: first redeem failed: " ++ show err; exitFailure
+
+    -- Second redeem (retry) — should return same refund
+    putStrLn "  [IR2] Second redeem (idempotent retry)..."
+    result3 <- runClientM (tokenRedeemClient (LBS.fromStrict tokenWireBytes)) env
+    refundBytes2 <- case result3 of
+      Right bs -> return (LBS.toStrict bs)
+      Left err -> do putStrLn $ "  FAIL: retry failed: " ++ show err; exitFailure
+
+    assertEq "idempotent refund bytes match" refundBytes1 refundBytes2
+    putStrLn "  OK: retry returns identical refund"
+
+    -- Third redeem (another retry) — should still work
+    putStrLn "  [IR3] Third redeem (another retry)..."
+    result4 <- runClientM (tokenRedeemClient (LBS.fromStrict tokenWireBytes)) env
+    refundBytes3 <- case result4 of
+      Right bs -> return (LBS.toStrict bs)
+      Left err -> do putStrLn $ "  FAIL: second retry failed: " ++ show err; exitFailure
+
+    assertEq "second retry refund bytes match" refundBytes1 refundBytes3
+    putStrLn "  OK: second retry returns identical refund"
+
+    -- Verify the refund is actually usable
+    let refund' = Refund refundBytes1
+    newTokenResult <- refundToCreditToken @L16 preRef params proof refund' pk
+    case newTokenResult of
+      Right t  -> do
+        let newCredits = creditTokenCredits t
+        assertEq "refund token credits" newCredits (scalarFromWord64 900)
+        putStrLn "  OK: refund produces valid credential with 900 credits"
+      Left err -> do putStrLn $ "  FAIL: refundToCreditToken returned " ++ show err; exitFailure
+
+    putStrLn "  Idempotent refund retry tests PASSED"
+
+-- =========================================================================
+-- Nullifier expiry tests
+-- =========================================================================
+
+testNullifierExpiry :: IO ()
+testNullifierExpiry = do
+  putStrLn "=== Nullifier expiry tests ==="
+
+  -- Test expireOldNullifiers at the DB level
+  conn <- open ":memory:"
+  initDB conn
+
+  -- Insert a nullifier and manually backdate its created_at to 2 hours ago
+  let nullifier1 = BS.replicate 32 0x01
+      ctx1 = BS.replicate 32 0xAA
+      ph1 = hash ("proof-exp-1" :: BS.ByteString)
+      refundData1 = "refund-1"
+  isNew <- checkAndStoreNullifier conn nullifier1 ctx1 ph1 refundData1
+  assertEq "nullifier stored" isNew True
+
+  -- Backdate to 2 hours ago
+  execute conn
+    "UPDATE nullifiers SET created_at = datetime('now', '-7200 seconds') WHERE nullifier = ?"
+    (Only nullifier1)
+
+  -- Verify it's there
+  stored <- lookupStoredRefund conn nullifier1
+  assertEq "refund present" stored (Just (ph1, refundData1))
+  putStrLn "  OK: nullifier stored and refund retrievable"
+
+  -- Expire with TTL=3600 (1 hour) — entry is 2 hours old, should be deleted
+  expireOldNullifiers conn 3600
+  stored2 <- lookupStoredRefund conn nullifier1
+  assertEq "refund expired" stored2 Nothing
+  putStrLn "  OK: old nullifier expired with short TTL"
+
+  -- Insert another (fresh, not backdated) and expire with short TTL — should NOT delete
+  let nullifier2 = BS.replicate 32 0x02
+      ctx2 = BS.replicate 32 0xBB
+      ph2 = hash ("proof-exp-2" :: BS.ByteString)
+      refundData2 = "refund-2"
+  isNew2 <- checkAndStoreNullifier conn nullifier2 ctx2 ph2 refundData2
+  assertEq "nullifier2 stored" isNew2 True
+
+  expireOldNullifiers conn 3600  -- 1 hour, but entry is fresh
+  stored3 <- lookupStoredRefund conn nullifier2
+  assertEq "refund not expired" stored3 (Just (ph2, refundData2))
+  putStrLn "  OK: fresh nullifier not expired with TTL"
+
+  putStrLn "  Nullifier expiry tests PASSED"
+
 #endif
 
 -- =========================================================================
@@ -586,10 +815,6 @@ tokenRequestClient :<|> tokenRedeemClient :<|> issuerDirectoryClient = client ac
 -- =========================================================================
 -- Helpers
 -- =========================================================================
-
--- | Encode Word16 big-endian
-putWord16BE :: Word16 -> BS.ByteString
-putWord16BE w = BS.pack [fromIntegral (w `shiftR` 8), fromIntegral (w .&. 0xFF)]
 
 assertEq :: (Eq a, Show a) => String -> a -> a -> IO ()
 assertEq label actual expected
