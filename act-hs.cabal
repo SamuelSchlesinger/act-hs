@@ -1,0 +1,91 @@
+cabal-version:   3.0
+name:            act-hs
+version:         0.1.0.0
+license:         NONE
+author:          Samuel Schlesinger
+maintainer:      sgschlesinger@gmail.com
+build-type:      Custom
+extra-doc-files: CHANGELOG.md
+
+custom-setup
+  setup-depends:
+    base      >= 4.17 && < 5,
+    Cabal     >= 3.0,
+    directory >= 1.3,
+    process   >= 1.6
+
+flag l8
+  description: Include L=8 range proof support (credits 1-255)
+  default: True
+  manual: True
+
+flag l16
+  description: Include L=16 range proof support (credits 1-65535)
+  default: True
+  manual: True
+
+flag l32
+  description: Include L=32 range proof support (credits 1 to 2^32-1)
+  default: True
+  manual: True
+
+flag l64
+  description: Include L=64 range proof support (credits 1 to 2^64-1)
+  default: True
+  manual: True
+
+flag l128
+  description: Include L=128 range proof support (credits 1 to 2^128-1)
+  default: True
+  manual: True
+
+library
+  exposed-modules:
+    Crypto.AnonymousCreditTokens
+    Crypto.AnonymousCreditTokens.Types
+  other-modules:
+    Crypto.AnonymousCreditTokens.FFI
+    Crypto.AnonymousCreditTokens.Internal
+  build-depends:
+    base       >= 4.17 && < 5,
+    bytestring >= 0.11
+  hs-source-dirs:   src
+  default-language: Haskell2010
+  extra-libraries:  act_ffi
+  if os(darwin)
+    extra-libraries: System c m resolv
+  if os(linux)
+    extra-libraries: pthread dl m
+  ghc-options: -Wall
+
+  if flag(l8)
+    cpp-options: -DACT_L8
+  if flag(l16)
+    cpp-options: -DACT_L16
+  if flag(l32)
+    cpp-options: -DACT_L32
+  if flag(l64)
+    cpp-options: -DACT_L64
+  if flag(l128)
+    cpp-options: -DACT_L128
+
+test-suite act-hs-test
+  type:             exitcode-stdio-1.0
+  main-is:          Spec.hs
+  hs-source-dirs:   test
+  build-depends:
+    base       >= 4.17 && < 5,
+    act-hs
+  default-language: Haskell2010
+  ghc-options:      -Wall
+
+  if flag(l8)
+    cpp-options: -DACT_L8
+  if flag(l16)
+    cpp-options: -DACT_L16
+  if flag(l32)
+    cpp-options: -DACT_L32
+  if flag(l64)
+    cpp-options: -DACT_L64
+  if flag(l128)
+    cpp-options: -DACT_L128

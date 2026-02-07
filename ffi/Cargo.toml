@@ -1,0 +1,16 @@
+[package]
+name = "act-ffi"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+anonymous-credit-tokens = "0.3.0"
+rand_core = { version = "0.6", features = ["getrandom"] }
+paste = "1"
+
+[profile.release]
+lto = true
+codegen-units = 1
