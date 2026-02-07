@@ -6,3 +6,4 @@ anonymous-credit-tokens/
 *.db
 *.db-shm
 *.db-wal
+act-hs/bench/report.html

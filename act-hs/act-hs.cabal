@@ -69,13 +69,38 @@ library
   if flag(l128)
     cpp-options: -DACT_L128
 
+benchmark act-hs-bench
+  type:             exitcode-stdio-1.0
+  main-is:          Bench.hs
+  hs-source-dirs:   bench
+  build-depends:
+    base       >= 4.17 && < 5,
+    act-hs,
+    bytestring >= 0.11,
+    criterion  >= 1.5,
+    deepseq    >= 1.4
+  default-language: Haskell2010
+  ghc-options:      -Wall -O2
+
+  if flag(l8)
+    cpp-options: -DACT_L8
+  if flag(l16)
+    cpp-options: -DACT_L16
+  if flag(l32)
+    cpp-options: -DACT_L32
+  if flag(l64)
+    cpp-options: -DACT_L64
+  if flag(l128)
+    cpp-options: -DACT_L128
+
 test-suite act-hs-test
   type:             exitcode-stdio-1.0
   main-is:          Spec.hs
   hs-source-dirs:   test
   build-depends:
     base       >= 4.17 && < 5,
-    act-hs
+    act-hs,
+    bytestring >= 0.11
   default-language: Haskell2010
   ghc-options:      -Wall
 
